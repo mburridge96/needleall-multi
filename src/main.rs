@@ -1,7 +1,14 @@
-use chrono::Local;
+use chrono::prelude::*;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use rocraters::ro_crate::constraints::*;
+use rocraters::ro_crate::graph_vector::GraphVector;
+use rocraters::ro_crate::{
+    contextual_entity, data_entity, graph_vector, metadata_descriptor, rocrate, root,
+};
 use seq_io::fasta::{Reader, Record};
+use std::collections::HashMap;
+use std::env::current_exe;
 use std::fmt::Write as FmtWrite;
 use std::fs::OpenOptions;
 use std::fs::{create_dir_all, File};
@@ -51,13 +58,22 @@ struct Args {
     /// Time debug
     #[arg(short, long, default_value = "false")]
     debug_time: bool,
+
+    /// RO-Crate
+    #[arg(short, long, default_value = "true")]
+    rocrate: bool,
+
+    // Agent
+    #[arg(short, long, default_value = "Unknown")]
+    agent: String,
 }
 
 fn main() {
     let args = Args::parse();
 
     let global_run_time = Instant::now();
-    
+    let start_time = Utc::now();
+
     // Check wd
     let wd: PathBuf = if args.working_dir == "date/" {
         let wd_name: String = Local::now().format("%Y%m%d%H%M%S").to_string();
@@ -86,12 +102,14 @@ fn main() {
     }
 
     let needleall = NeedleAll {
-        outfile: wd.join(args.outfile).display().to_string(),
-        errorfile: wd.join(args.errorfile).display().to_string(),
+        outfile: &wd.join(&args.outfile).display().to_string(),
+        errorfile: &wd.join(&args.errorfile).display().to_string(),
         gap_open_penalty: args.gap_open_penalty,
         gap_extend_penalty: args.gap_extend_penalty,
         threshold: args.threshold,
         debug_time: args.debug_time,
+        rocrate: args.rocrate,
+        agent: &args.agent,
     };
     println!("Needleall input: {:?}", needleall);
 
@@ -99,8 +117,10 @@ fn main() {
 
     process_seq_data_parallel(&seq_data, &needleall);
 
+    let end_time = Utc::now();
     let global_run_end = global_run_time.elapsed();
     println!("RUN TIME: {:.2}s", global_run_end.as_secs());
+    build_crate(wd, &args, &needleall, start_time, end_time);
 }
 
 // process in parallel
@@ -157,13 +177,15 @@ fn process_seq_data_parallel(seq_data: &SeqData, needle: &NeedleAll) {
 }
 
 #[derive(Debug)]
-struct NeedleAll {
-    outfile: String,
-    errorfile: String,
+struct NeedleAll<'a> {
+    outfile: &'a String,
+    errorfile: &'a String,
     gap_open_penalty: f32,
     gap_extend_penalty: f32,
     threshold: f32,
     debug_time: bool,
+    rocrate: bool,
+    agent: &'a String,
 }
 #[derive(Debug)]
 struct SeqData {
@@ -316,4 +338,162 @@ fn write_identities(identities: &[(String, String, f32)], outfile: &String, thre
             writeln!(file, "{}\t{}\t{:.6}", id1, id2, identity).expect("Unable to write to file");
         }
     }
+}
+
+fn build_crate(
+    wd: PathBuf,
+    args: &Args,
+    needle: &NeedleAll,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
+) {
+    let mut rocrate = rocrate::RoCrate {
+        context: rocrate::RoCrateContext::ReferenceContext(
+            "https://w3id.org/ro/crate/1.1/context".to_string(),
+        ),
+        graph: Vec::new(),
+    };
+
+    // Set new MetadataDescriptor
+    let description = metadata_descriptor::MetadataDescriptor {
+        id: "ro-crate-metadata.json".to_string(),
+        type_: DataType::Term("CreativeWork".to_string()),
+        conforms_to: Id::Id("https://w3id.org/ro/crate/1.1".to_string()),
+        about: Id::Id("./".to_string()),
+        dynamic_entity: None,
+    };
+
+    rocrate
+        .graph
+        .push(GraphVector::MetadataDescriptor(description));
+
+    // Create new RootDataEntity
+    let root_data_entity = root::RootDataEntity {
+        id: "./".to_string(),
+        type_: DataType::Term("Dataset".to_string()),
+        name: "Needleall".to_string(),
+        description: "Needleall result for the generation of all-to-all sequence identities"
+            .to_string(),
+        date_published: Utc::now().to_string(),
+        license: License::Id(Id::Id("MIT LICENSE".to_string())),
+        dynamic_entity: None,
+    };
+
+    rocrate
+        .graph
+        .push(GraphVector::RootDataEntity(root_data_entity));
+
+    rocrate
+        .graph
+        .push(GraphVector::DataEntity(data_entity::DataEntity {
+            id: needle.outfile.to_string(),
+            type_: DataType::Term("File".to_string()),
+            dynamic_entity: Some(HashMap::from([
+                (
+                    "name".to_string(),
+                    EntityValue::EntityString("Identities".to_string()),
+                ),
+                (
+                    "description".to_string(),
+                    EntityValue::EntityString(
+                        "Needleman All Identities file for all-to-all similarity comparison"
+                            .to_string(),
+                    ),
+                ),
+            ])),
+        }));
+
+    rocrate
+        .graph
+        .push(GraphVector::DataEntity(data_entity::DataEntity {
+            id: needle.errorfile.to_string(),
+            type_: DataType::Term("File".to_string()),
+            dynamic_entity: Some(HashMap::from([
+                (
+                    "name".to_string(),
+                    EntityValue::EntityString("Needleman Error File".to_string()),
+                ),
+                (
+                    "description".to_string(),
+                    EntityValue::EntityString(
+                        "Contains errors that occured during needleman".to_string(),
+                    ),
+                ),
+            ])),
+        }));
+
+    rocrate.graph.push(GraphVector::ContextualEntity(
+        contextual_entity::ContextualEntity {
+            id: "#needleman_1".to_string(),
+            type_: DataType::Term("CreateAction".to_string()),
+            dynamic_entity: Some(HashMap::from([
+                (
+                    "name".to_string(),
+                    EntityValue::EntityString("Needleall run".to_string()),
+                ),
+                (
+                    "description".to_string(),
+                    EntityValue::EntityString("Needleall run instance".to_string()),
+                ),
+                (
+                    "agent".to_string(),
+                    EntityValue::EntityId(Id::Id(needle.agent.to_string())),
+                ),
+                (
+                    "startTime".to_string(),
+                    EntityValue::EntityString(start_time.to_string()),
+                ),
+                (
+                    "endTime".to_string(),
+                    EntityValue::EntityString(end_time.to_string()),
+                ),
+                (
+                    "instrument".to_string(),
+                    EntityValue::EntityId(Id::Id(env!("CARGO_PKG_REPOSITORY").to_string())),
+                ),
+                (
+                    "object".to_string(),
+                    EntityValue::EntityId(Id::Id(args.fasta.to_string())),
+                ),
+                (
+                    "result".to_string(),
+                    EntityValue::EntityId(Id::IdArray(Vec::from([
+                        needle.errorfile.to_string(),
+                        needle.outfile.to_string(),
+                    ]))),
+                ),
+            ])),
+        },
+    ));
+
+    let entity_types = Vec::from(["File".to_string(), "SoftwareSourceCode".to_string()]);
+    rocrate.graph.push(GraphVector::ContextualEntity(
+        contextual_entity::ContextualEntity {
+            id: env!("CARGO_PKG_REPOSITORY").to_string(),
+            type_: DataType::TermArray(entity_types),
+            dynamic_entity: Some(HashMap::from([
+                (
+                    "name".to_string(),
+                    EntityValue::EntityString(env!("CARGO_PKG_NAME").to_string()),
+                ),
+                (
+                    "description".to_string(),
+                    EntityValue::EntityString(env!("CARGO_PKG_DESCRIPTION").to_string()),
+                ),
+                (
+                    "version".to_string(),
+                    EntityValue::EntityString(env!("CARGO_PKG_VERSION").to_string()),
+                ),
+                (
+                    "codeRepository".to_string(),
+                    EntityValue::EntityString(env!("CARGO_PKG_REPOSITORY").to_string()),
+                ),
+            ])),
+        },
+    ));
+
+    rocraters::ro_crate::write::write_crate(
+        &rocrate,
+        wd.join("ro-crate-metadata.json").display().to_string(),
+    )
 }

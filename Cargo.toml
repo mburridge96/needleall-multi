@@ -1,7 +1,10 @@
 [package]
 name = "needleall-multi"
 version = "0.1.0"
+authors = ["https://orcid.org/0000-0002-6201-2598"]
+description = "Needleman all wrapper for multiprocess EMBOSS needleall execution"
 edition = "2021"
+repository = "https://github.com/mburridge96/needleall-multi"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,3 +16,4 @@ clap = { version = "4.5.1", features = ["derive"] }
 num_cpus = "1.13.0"
 chrono = "0.4"
 indicatif = "0.17.0"
+ro-crate-rs = "0.4.7"
